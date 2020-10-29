@@ -1,0 +1,272 @@
+Install and Configure Private Docker Registry
+Step 1: Create Registry Directories
+Start configuring the server that is going to host the private registry. You first want to create a new directory that will store all the required configuration files.
+
+1. The following command creates a new project directory labeled registry and two sub-directories – nginx and auth:
+
+mkdir -p registry/{nginx, auth}
+2. Move into registry and create two new directories inside nginx:
+
+cd registry/
+mkdir -p nginx/{conf.d/,ssl}
+3. See the hierarchy of the newly-created directories by typing:
+
+tree
+Hierarchy of the newly-created directories.
+Step 2: Create Docker-Compose Script and Define Services
+Next, you need to create and configure a new docker-compose.yml script. The script defines the Docker-Compose version, as well as the services you need to set up a private registry.
+
+1. Create a new file, while in the registry directory, with a text editor of your preference:
+
+nano docker-compose.yml
+2. There are a few things you need to define in this configuration file, so follow along closely and carefully add each section of the content:
+
+version: '3'
+services:
+#Registry
+  registry:
+    image: registry:2
+    restart: always
+    ports:
+    - "5000:5000"
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: Registry-Realm
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/registry.passwd
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /data
+    volumes:
+      - registrydata:/data
+      - ./auth:/auth
+    networks:
+      - mynet
+#Nginx Service
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: unless-stopped
+    tty: true
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d/:/etc/nginx/conf.d/
+      - ./nginx/ssl/:/etc/nginx/ssl/
+    networks:
+      - mynet
+#Docker Networks
+networks:
+  mynet:
+    driver: bridge
+#Volumes
+volumes:
+  registrydata:
+    driver: local
+3. Save and close the file.
+
+The configuration explained:
+
+Firstly, you define the version of Docker-Compose you want to use. In this example, it is version: '3'. Then you move on to defining all the components of the Docker registry, starting with the #Registry service.
+
+Docker Registry is essentially a container running the registry image, which is why the image is defined as registry:2.
+
+Adding the restart: always line ensures you start Docker Registry as a service as soon as you boot up the system.
+
+Determining the ports 5000:5000 instructs Docker that the host and the running container communicate over the defined port numbers.
+
+The service will mount the docker volume registrydata and the local directory auth, along with its authentication file registry.passwd.
+
+The configuration of Docker Compose script explained
+The next element is the #Nginx Service. The configuration outlines the service  runs on ports 80:80 (HTTPS) and 443:443 (HTTPS). It will mount the local directory for virtual configuration (conf.d) and SSL certificates (ssl).
+
+Nginx service configuration file for docker registry explained.
+Finally, set mynet with a bridge driver and the registrydata with a local driver as parameters for the custom network.
+
+Defining the custom network for docker registry.
+Step 3: Set Up Nginx Port Forwarding
+The next step is configuring a Nginx virtual host and configuring it for the Nginx service.
+
+1. Move to the nginx/conf.d/ directory you created in the previous step:
+
+cd nginx/conf.d/
+2. Create a new virtual host file named registry.conf:
+
+nano registry.conf
+3. Add the following content:
+
+upstream docker-registry {
+    server registry:5000;
+}
+
+server {
+    listen 80;
+    server_name registry.example-server.com;
+    return 301 https://registry.example-server.com$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name registry.example-server.com;
+
+    ssl_certificate /etc/nginx/ssl/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+
+    # Log files for Debug
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        # Do not allow connections from docker 1.5 and earlier
+        # docker pre-1.6.0 did not properly set the user agent on ping, catch "Go *" user agents
+        if ($http_user_agent ~ "^(docker\/1\.(3|4|5(?!\.[0-9]-dev))|Go ).*$" )  {
+            return 404;
+        }
+
+        proxy_pass                          http://docker-registry;
+        proxy_set_header  Host              $http_host;
+        proxy_set_header  X-Real-IP         $remote_addr;
+        proxy_set_header  X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header  X-Forwarded-Proto $scheme;
+        proxy_read_timeout                  900;
+    }
+
+}
+4. Save the file and return to the terminal shell.
+
+Step 4: Increase Nginx File Upload Size
+By default, Nginx limits the file upload size to 1MB. As many Docker images exceed this number, the best practice is to increase the maximum file size on Nginx. Ensure you can upload images that are of larger file size by setting the max_body_size to 2GB.
+
+1. Create an additional configuration file with:
+
+nano additional.conf
+2. Add the following line in the file:
+
+client_max_body_size 2G;
+3. Save and close the file.
+
+
+Generate a OpenSSL Certificate Signing Request 
+Step 1: Log Into Your Server
+Open a terminal window. Use your SSH connection to log into your remote server.
+
+Note: If you are working locally, you don’t need an SSH connection. Also, most Linux systems will launch a terminal window by pressing Ctrl-Alt-T or Ctrl-Alt-F1.
+
+Step 2: Create an RSA Private Key and CSR
+It is advised to issue a new private key each time you generate a CSR. Hence, the steps below instruct on how to generate both the private key and the CSR.
+
+openssl req -new -newkey rsa:2048 -nodes -keyout your_domain.key -out your_domain.csr
+Make sure to replace your_domain with the actual domain you’re generating a CSR for.
+
+The commands are broken out as follows:
+openssl – activates the OpenSSL software
+req – indicates that we want a CSR
+–new –newkey – generate a new key
+rsa:2048 – generate a 2048-bit RSA mathematical key
+–nodes – no DES, meaning do not encrypt the private key in a PKCS#12 file
+–keyout – indicates the domain you’re generating a key for
+–out – specifies the name of the file your CSR will be saved as
+Note: Use 2048-bit key pairs. The 4096-bit key pairs are more secure, however, they require a lot more server resources.
+
+entering CSR details on server
+Step 3: Enter Your CSR Information
+Your system should launch a text-based questionnaire for you to fill out.
+
+Enter your information in the fields as follows:
+
+Country Name – use a 2-letter country code (US for the United States)
+State – the state in which the domain owner is incorporated
+Locality – the city in which the domain owner is incorporated
+Organization name – the legal entity that owns the domain
+Organizational unit name – the name of the department or group in your organization that deals with certificates
+Common name – typically the fully qualified domain name (FQDN), i.e. what the users type in a web browser to navigate to your website
+Email address – the webmaster’s email address
+Challenge password – an optional password for your key pair
+Please take into account that Organization Name and Unit Name must not contain the following characters:
+
+< > ~ ! @ # $ % ^ * / \ ( ) ?.,&
+
+Step 4: Locate Certificate Signing Request File
+Once the software finishes, you should be able to find the CSR file in your working directory.
+
+You can also enter the following:
+
+ls *.csr
+The system should list out all certificate signing requests on the system. The one that matches the domain name you provided in Step 2 appended with the .csr extension is the one you need to look into.
+
+Step 5: Submit the CSR as Part of Your SSL Request
+You can open the .csr file in a text editor to find the alphanumeric code that was generated.
+
+Enter the following command:
+
+sudo nano your_domain.csr
+This text can be copied and pasted into a submittal form to request your SSL certificate from a Certificate Authority.
+
+Make sure you copy the entire text. Some CAs may allow you to simply upload the .csr file you generated. Below is an example of a CSR.
+
+Step 5: Configure SSL Certificate and Basic Authentication
+1. The SSL certificates files of your domain need to be copied to the ssl directory. To do that, run the commands:
+
+cp /path/to/ssl/fullchain.pem ssl/
+cp /path/to/ssl/privkey.pem ssl/
+2. Then, move to the auth directory:
+
+cd auth
+3. And request a new password file named registry.passwd for your user:
+
+htpasswd -Bc registry.passwd example
+4. Type in a strong password and re-type it to confirm. With this, you have added a password for your user.
+
+Note: If you do not have a certificate yet, check out how to generate an openSSL certificate signing request.
+
+Step 6: Add the Root CA Certificate
+Now you need to add the Root CA certificate to Docker and the system you are working on.
+
+1. Export the .crt file with OpenSSL by typing:
+
+openssl x509 -in rootCA.pem -inform PEM -out rootCA.crt
+2. Copy the Root certificate into a new directory for Docker certificates:
+
+mkdir -p /etc/docker/certs.d/registry.example-server.com/
+cp rootCA.crt /etc/docker/certs.d/example-server.com/
+3. Next, copy the same certificate into another new directory under the name /usr/share/ca-certificate/extra:
+
+mkdir -p .usr.share.ca-certificates/extra/
+cp rootCA.crt /usr/share/ca-certificates/extra/
+4. Reconfigure the newly created ca-certificate package by typing:
+
+dpkg-reconfigure ca-certificates
+5. Finally, restart the Docker service:
+
+systemctl restart docker
+Step 7: Run Docker Registry
+With everything set up and ready, you can build the Docker Registry container using Docker-Compose:
+
+docker-compose up -d
+Check if the Registry and the Nginx services are running:
+
+docker-compose ps
+netstat -plntu
+The output should show you the services and their assigned ports.
+
+Pull Image from Docker Hub to a Private Registry
+1. To locally store an image from Docker Hub to your private registry, use the docker pull command:
+
+docker pull [docker_image]
+2. Add a tag to the image to label it for the private registry:
+
+docker image tag [docker_image] registry.example-server.com/[new_image_name]
+3. You can check whether the Docker image is locally available by prompting the system to list all locally stored images:
+
+docker images
+How to Push Docker Image to Private Registry
+1. To push an image from a Docker host to the private Docker registry server, you first need to log in to the registry with the command:
+
+docker login https://registry.example-server.com/v2/
+2. Type in the username and password you defined for the virtual host.
+
+3. Now you can push your image to the private registry with the command:
+
+docker push registry.example-server.com/[new_image_name]
+4. See a list of images stored in the private Docker registry:
+
+http -a example https://registry.example-server.com/v2/_catalog
+
