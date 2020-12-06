@@ -1,5 +1,11 @@
 Installing Docker
 
+yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+yum -t install docker-ce
+
+OR
+
 
 steps:- yum install yum-utils
 cd/etc/yum.repos.d/
